@@ -1,0 +1,654 @@
+<title>Lotte Windanzeige</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="theme-color" content="#0d1b26">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Lotte Wind">
+<style>
+/* Layout: Cockpit-Instrument. Großes Rundinstrument links, Zahlenblock rechts (Querformat), untereinander im Hochformat.
+   Schriften bewusst nur Systemschriften: An Bord gibt es kein Internet, die Seite kommt vom ESP32. */
+:root {
+  --bg: #e9eef2;          /* Seewasser-Grau, leicht blau */
+  --panel: #f7f9fb;
+  --ink: #0f2230;
+  --muted: #5a6d7a;
+  --line: #c4d0d8;
+  --dial: #ffffff;
+  --needle: #e0a100;      /* Instrumenten-Gelb */
+  --port: #c8372d;        /* Backbord */
+  --stbd: #1f8a4c;        /* Steuerbord */
+  --ok: #1f8a4c;
+  --warn: #b7791f;
+  --bad: #c8372d;
+  --font-display: "SF Pro Display", "Segoe UI Variable Display", "Roboto", system-ui, sans-serif;
+  --font-body: system-ui, -apple-system, "Segoe UI", "Roboto", sans-serif;
+  --font-num: "SF Mono", "Roboto Mono", ui-monospace, "Menlo", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1b26; --panel: #13283a; --ink: #e6eef3; --muted: #8aa3b3; --line: #24435a;
+    --dial: #0a1620; --needle: #f2b705; --port: #ef5a4f; --stbd: #3cc173;
+    --ok: #3cc173; --warn: #e3a33a; --bad: #ef5a4f; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0d1b26; --panel: #13283a; --ink: #e6eef3; --muted: #8aa3b3; --line: #24435a;
+  --dial: #0a1620; --needle: #f2b705; --port: #ef5a4f; --stbd: #3cc173;
+  --ok: #3cc173; --warn: #e3a33a; --bad: #ef5a4f; color-scheme: dark;
+}
+/* Nachtmodus: nur Rot auf Schwarz, schont die Nachtsicht */
+body.night {
+  --bg: #000000; --panel: #0a0000; --ink: #ff3b2f; --muted: #a3241c; --line: #3a0d0a;
+  --dial: #000000; --needle: #ff3b2f; --port: #ff3b2f; --stbd: #a3241c;
+  --ok: #ff3b2f; --warn: #ff3b2f; --bad: #ff3b2f; color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 12px;
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+*, *::before, *::after { box-sizing: inherit; }
+button, input, select { font: inherit; color: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 3px solid var(--needle); outline-offset: 2px; }
+
+.top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.brand { font-family: var(--font-display); font-weight: 700; font-size: 1.15rem; letter-spacing: .02em; margin-right: auto; }
+.brand small { font-weight: 500; color: var(--muted); font-size: .8rem; letter-spacing: .08em; text-transform: uppercase; margin-left: 6px; }
+.pill { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); font-size: .85rem; font-weight: 600; }
+.pill i { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.pill[data-s="ok"] i { background: var(--ok); }
+.pill[data-s="sim"] i { background: var(--needle); }
+.pill[data-s="stale"] i, .pill[data-s="off"] i { background: var(--bad); }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 8px 14px; font-weight: 600; cursor: pointer; min-height: 44px; }
+.btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+.app { display: grid; gap: 16px; margin-top: 12px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 760px) and (orientation: landscape), (min-width: 1000px) {
+  .app { grid-template-columns: minmax(0, 1.25fr) minmax(300px, 1fr); align-items: start; }
+}
+.dialwrap { display: flex; justify-content: center; min-width: 0; }
+#dial { width: 100%; max-width: min(100%, calc(100vh - 110px)); aspect-ratio: 1; height: auto; display: block; }
+#dial.stale { opacity: .45; }
+
+.side { display: grid; gap: 14px; min-width: 0; align-content: start; }
+.readouts { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.cell { background: var(--panel); padding: 12px 14px; min-width: 0; }
+.cell.big { grid-column: 1 / -1; }
+.lbl { font-size: .72rem; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.val { font-family: var(--font-num); font-variant-numeric: tabular-nums; font-weight: 700; font-size: clamp(1.6rem, 4vw, 2.3rem); line-height: 1.1; margin-top: 4px; white-space: nowrap; }
+.big .val { font-size: clamp(3.4rem, 11vw, 6.2rem); letter-spacing: -.02em; }
+.val .u { font-family: var(--font-body); font-size: .4em; font-weight: 600; color: var(--muted); margin-left: 6px; letter-spacing: 0; }
+.sub { color: var(--muted); font-size: .85rem; margin-top: 2px; }
+.side-port { color: var(--port); }
+.side-stbd { color: var(--stbd); }
+
+.units { display: flex; gap: 6px; flex-wrap: wrap; }
+.trend { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 10px 12px; }
+.trend canvas { width: 100%; height: 90px; display: block; margin-top: 6px; }
+
+details.cfg { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 4px 14px; }
+details.cfg summary { cursor: pointer; font-weight: 700; padding: 10px 0; min-height: 44px; display: flex; align-items: center; }
+.form { display: grid; gap: 12px; padding-bottom: 12px; }
+.row { display: grid; gap: 4px; }
+.row input[type="text"], .row select { border: 1px solid var(--line); background: var(--bg); border-radius: 8px; padding: 10px; min-height: 44px; width: 100%; }
+.row input[type="range"] { width: 100%; accent-color: var(--needle); }
+pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px; overflow-x: auto; min-height: 7.5em; white-space: pre; }
+.hint { color: var(--muted); font-size: .85rem; line-height: 1.45; max-width: 65ch; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<header class="top">
+  <div class="brand">Lotte <small>Wind</small></div>
+  <span class="pill" id="status" data-s="sim"><i></i><span id="statusText">Simulator</span></span>
+  <button class="btn" id="usbBtn" type="button" hidden>USB-Adapter verbinden</button>
+  <button class="btn" id="nightBtn" aria-pressed="false" type="button">Nacht</button>
+</header>
+
+<main class="app">
+  <div class="dialwrap">
+    <svg id="dial" viewBox="-200 -200 400 400" role="img" aria-label="Windrichtung relativ zum Bug"></svg>
+  </div>
+
+  <section class="side">
+    <div class="readouts">
+      <div class="cell big">
+        <div class="lbl" id="awsLbl">Scheinbarer Wind</div>
+        <div class="val"><span id="aws">--.-</span><span class="u" id="awsUnit">kn</span></div>
+        <div class="sub" id="bftText">&nbsp;</div>
+      </div>
+      <div class="cell">
+        <div class="lbl" id="awaLbl">Windwinkel</div>
+        <div class="val" id="awa">---°</div>
+        <div class="sub" id="awaSide">&nbsp;</div>
+      </div>
+      <div class="cell">
+        <div class="lbl">Böe 10 min</div>
+        <div class="val"><span id="gust">--.-</span><span class="u" id="gustUnit">kn</span></div>
+        <div class="sub">Höchstwert</div>
+      </div>
+      <div class="cell">
+        <div class="lbl">Mittel 2 min</div>
+        <div class="val"><span id="avg">--.-</span><span class="u" id="avgUnit">kn</span></div>
+        <div class="sub" id="avgDir">&nbsp;</div>
+      </div>
+      <div class="cell">
+        <div class="lbl">Beaufort</div>
+        <div class="val" id="bft">-</div>
+        <div class="sub">Bft</div>
+      </div>
+    </div>
+
+    <div class="units" role="group" aria-label="Einheit">
+      <button class="btn" type="button" data-unit="kn" aria-pressed="true">Knoten</button>
+      <button class="btn" type="button" data-unit="ms" aria-pressed="false">m/s</button>
+      <button class="btn" type="button" data-unit="bft" aria-pressed="false">Beaufort</button>
+    </div>
+
+    <div class="trend">
+      <div class="lbl">Windgeschwindigkeit, letzte 5 Minuten</div>
+      <canvas id="spark" aria-hidden="true"></canvas>
+    </div>
+
+    <details class="cfg" id="cfg">
+      <summary>Einstellungen und Datenquelle</summary>
+      <div class="form">
+        <div class="row">
+          <label class="lbl" for="src">Datenquelle</label>
+          <select id="src">
+            <option value="usb" id="optUsb">USB-NMEA-Adapter am Tablet</option>
+            <option value="sim">Simulator (Testdaten)</option>
+            <option value="ws">WLAN-Gateway (NMEA über WebSocket)</option>
+          </select>
+        </div>
+        <div class="row" id="rowBaud">
+          <label class="lbl" for="baud">Baudrate</label>
+          <select id="baud">
+            <option value="4800">4800 (NMEA 0183 Standard, NASA)</option>
+            <option value="38400">38400 (NMEA 0183 HS)</option>
+          </select>
+        </div>
+        <div class="row" id="rowWs">
+          <label class="lbl" for="wsUrl">Gateway-Adresse</label>
+          <input type="text" id="wsUrl" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="row">
+          <label class="lbl" for="damp">Dämpfung: <span id="dampVal">3</span></label>
+          <input type="range" id="damp" min="0" max="10" step="1" value="3">
+        </div>
+        <div class="row">
+          <span class="lbl">Letzte NMEA-Sätze</span>
+          <pre class="log" id="log"></pre>
+        </div>
+        <p class="hint" id="usbInfo"></p>
+        <p class="hint">Im Simulator erzeugt die Seite selbst NMEA-Sätze, wie sie die NASA-Basisstation sendet (<code>$IIMWV</code>, 4800 Baud), und schickt sie durch denselben Auswerter wie echte Daten. Für den USB-Adapter: Adapter per USB-OTG ans Tablet stecken, „USB-Adapter verbinden“ tippen und den Adapter in der Liste auswählen. Danach verbindet sich die App beim Einstecken von selbst.</p>
+      </div>
+    </details>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  // ---------- Einstellungen ----------
+  const hasUsb = "usb" in navigator, hasSerial = "serial" in navigator;
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  const usbPossible = (hasUsb || hasSerial) && window.isSecureContext;
+  const defaults = {
+    src: usbPossible ? "usb" : "sim",
+    wsUrl: "ws://192.168.4.1:81/",
+    unit: "kn", damp: 3, night: false, baud: 4800
+  };
+  const cfg = Object.assign({}, defaults);
+  try { Object.assign(cfg, JSON.parse(localStorage.getItem("lotteWind") || "{}")); } catch (e) {}
+  if (cfg.src === "usb" && !usbPossible) cfg.src = "sim";
+  const save = () => { try { localStorage.setItem("lotteWind", JSON.stringify(cfg)); } catch (e) {} };
+
+  const $ = id => document.getElementById(id);
+
+  // ---------- NMEA 0183 ----------
+  function checksum(body) {
+    let c = 0;
+    for (let i = 0; i < body.length; i++) c ^= body.charCodeAt(i);
+    return c.toString(16).toUpperCase().padStart(2, "0");
+  }
+  const toKn = { N: 1, M: 1.943844, K: 1 / 1.852, S: 0.868976 };
+
+  // Gibt {awa (0..360, rechtsdrehend ab Bug), kn, ref:"R"|"T"} zurück oder null
+  function parseNmea(line) {
+    line = line.trim();
+    const m = /^[$!]([A-Z0-9]{2})([A-Z]{3}),([^*]*)(?:\*([0-9A-Fa-f]{2}))?$/.exec(line);
+    if (!m) return null;
+    if (m[4] && checksum(line.slice(1, line.indexOf("*"))) !== m[4].toUpperCase()) return null;
+    const f = m[3].split(",");
+    if (m[2] === "MWV") {
+      // MWV,<Winkel>,<R|T>,<Geschw.>,<N|M|K|S>,<A|V>
+      if (f[4] && f[4] !== "A") return null;
+      const a = parseFloat(f[0]), s = parseFloat(f[2]), k = toKn[f[3]];
+      if (!isFinite(a) || !isFinite(s) || !k) return null;
+      return { awa: ((a % 360) + 360) % 360, kn: s * k, ref: f[1] === "T" ? "T" : "R" };
+    }
+    if (m[2] === "VWR") {
+      // VWR,<Winkel 0..180>,<L|R>,<kn>,N,<m/s>,M,<km/h>,K
+      const a = parseFloat(f[0]); let kn = parseFloat(f[2]);
+      if (!isFinite(kn)) kn = parseFloat(f[4]) * toKn.M;
+      if (!isFinite(a) || !isFinite(kn)) return null;
+      return { awa: f[1] === "L" ? 360 - a : a, kn, ref: "R" };
+    }
+    return null;
+  }
+
+  // ---------- Zustand ----------
+  const st = { vx: null, vy: null, kn: null, ref: "R", lastValid: 0, hist: [], log: [] };
+  const RAD = Math.PI / 180;
+
+  function onWind(w) {
+    const alpha = 1 / (1 + cfg.damp);
+    const x = Math.sin(w.awa * RAD), y = Math.cos(w.awa * RAD);
+    if (st.vx === null) { st.vx = x; st.vy = y; st.kn = w.kn; }
+    else {
+      st.vx += alpha * (x - st.vx); st.vy += alpha * (y - st.vy);
+      st.kn += alpha * (w.kn - st.kn);
+    }
+    st.ref = w.ref;
+    const now = Date.now();
+    st.lastValid = now;
+    st.hist.push({ t: now, kn: w.kn, x, y });
+    while (st.hist.length && st.hist[0].t < now - 600000) st.hist.shift();
+  }
+
+  function feedLine(line) {
+    if (!line.trim()) return;
+    st.log.push(line.trim()); if (st.log.length > 6) st.log.shift();
+    const w = parseNmea(line);
+    if (w) onWind(w);
+  }
+
+  // Zerlegt einen Byte-Strom in NMEA-Zeilen
+  function makeSplitter() {
+    const dec = new TextDecoder("ascii"); let buf = "";
+    return bytes => {
+      buf += dec.decode(bytes, { stream: true });
+      let i;
+      while ((i = buf.search(/[\r\n]/)) >= 0) { const line = buf.slice(0, i); buf = buf.slice(i + 1); if (line) feedLine(line); }
+      if (buf.length > 300) buf = "";
+    };
+  }
+
+  // ---------- USB-NMEA-Adapter ----------
+  // Android: WebUSB mit eigenen Treibern für die üblichen USB-Seriell-Chips.
+  // Windows/Mac/Linux (Chrome, Edge): Web Serial, dort hat das System den Treiber.
+  const USB_FILTERS = [{ vendorId: 0x0403 }, { vendorId: 0x10c4 }, { vendorId: 0x1a86 }, { vendorId: 0x067b }, { classCode: 2 }];
+  const CHIP_NAME = { ftdi: "FTDI", cp210x: "Silabs CP210x", ch34x: "WCH CH340/CH341", pl2303: "Prolific PL2303", cdc: "USB CDC" };
+  const usb = { active: null, name: "", error: "" };
+  const useWebUsb = hasUsb && (isAndroid || !hasSerial);
+  const chipOf = d => ({ 0x0403: "ftdi", 0x10c4: "cp210x", 0x1a86: "ch34x", 0x067b: "pl2303" })[d.vendorId] || "cdc";
+
+  async function webUsbOpen(dev) {
+    const baud = +cfg.baud;
+    if (!dev.opened) await dev.open();
+    if (!dev.configuration) await dev.selectConfiguration(1);
+    const chip = chipOf(dev);
+    let dataIf = null, epIn = null, commIf = null;
+    for (const itf of dev.configuration.interfaces) {
+      const alt = itf.alternate || itf.alternates[0];
+      if (alt.interfaceClass === 2) commIf = itf.interfaceNumber;
+      const ep = alt.endpoints.find(e => e.direction === "in" && e.type === "bulk");
+      if (ep && dataIf === null) { dataIf = itf.interfaceNumber; epIn = ep; }
+    }
+    if (dataIf === null) throw new Error("Das USB-Gerät hat keinen Datenkanal.");
+    if (commIf !== null && commIf !== dataIf) { try { await dev.claimInterface(commIf); } catch (e) {} }
+    await dev.claimInterface(dataIf);
+    const ctl = (type, recipient, request, value, index, data) =>
+      dev.controlTransferOut({ requestType: type, recipient, request, value, index }, data);
+    const vin = (request, value, index, len) =>
+      dev.controlTransferIn({ requestType: "vendor", recipient: "device", request, value, index }, len);
+    const lineCoding = () => { const b = new ArrayBuffer(7), v = new DataView(b); v.setUint32(0, baud, true); v.setUint8(4, 0); v.setUint8(5, 0); v.setUint8(6, 8); return b; };
+
+    if (chip === "ftdi") {
+      await ctl("vendor", "device", 0, 0, 0);                         // Reset
+      await ctl("vendor", "device", 2, 0, 0);                         // keine Flusskontrolle
+      await ctl("vendor", "device", 3, Math.round(3000000 / baud), 0); // Baudrate (4800 -> 625)
+      await ctl("vendor", "device", 4, 0x0008, 0);                    // 8N1
+      await ctl("vendor", "device", 1, 0x0303, 0);                    // DTR+RTS an
+    } else if (chip === "cp210x") {
+      const b = new ArrayBuffer(4); new DataView(b).setUint32(0, baud, true);
+      await ctl("vendor", "interface", 0x00, 1, dataIf);              // UART an
+      await ctl("vendor", "interface", 0x1e, 0, dataIf, b);           // Baudrate
+      await ctl("vendor", "interface", 0x03, 0x0800, dataIf);         // 8N1
+      await ctl("vendor", "interface", 0x07, 0x0303, dataIf);         // DTR+RTS an
+    } else if (chip === "ch34x") {
+      const T = { 2400: [0xd901, 0x0038], 4800: [0x6402, 0x001f], 9600: [0xb202, 0x0013], 19200: [0xd902, 0x000d], 38400: [0x6403, 0x000a] }[baud] || [0x6402, 0x001f];
+      await vin(0x5f, 0, 0, 2);
+      await ctl("vendor", "device", 0xa1, 0, 0);
+      await ctl("vendor", "device", 0x9a, 0x1312, T[0]);
+      await ctl("vendor", "device", 0x9a, 0x0f2c, T[1]);
+      await ctl("vendor", "device", 0x9a, 0x2518, 0x00c3);           // 8N1, Senden+Empfangen an
+      await ctl("vendor", "device", 0xa4, 0xff9f, 0);                // DTR+RTS an
+    } else if (chip === "pl2303") {
+      const rd = v => vin(1, v, 0, 1), wr = (v, i) => ctl("vendor", "device", 1, v, i);
+      await rd(0x8484); await wr(0x0404, 0); await rd(0x8484); await rd(0x8383); await rd(0x8484);
+      await wr(0x0404, 1); await rd(0x8484); await rd(0x8383); await wr(0, 1); await wr(1, 0); await wr(2, 0x44);
+      await ctl("class", "interface", 0x20, 0, 0, lineCoding());
+      await ctl("class", "interface", 0x22, 3, 0);
+    } else {
+      const ci = commIf !== null ? commIf : dataIf;
+      try { await ctl("class", "interface", 0x20, 0, ci, lineCoding()); await ctl("class", "interface", 0x22, 3, ci); } catch (e) {}
+    }
+    return { kind: "webusb", dev, epIn, chip };
+  }
+
+  async function webUsbLoop(h) {
+    const split = makeSplitter(), size = h.epIn.packetSize || 64;
+    while (usb.active === h) {
+      const r = await h.dev.transferIn(h.epIn.endpointNumber, size * 8);
+      if (r.status === "stall") { await h.dev.clearHalt("in", h.epIn.endpointNumber); continue; }
+      if (!r.data || !r.data.byteLength) continue;
+      const raw = new Uint8Array(r.data.buffer, r.data.byteOffset, r.data.byteLength);
+      if (h.chip === "ftdi") {
+        // FTDI setzt vor jedes Paket 2 Statusbytes
+        for (let i = 0; i < raw.length; i += size) { const part = raw.subarray(i + 2, Math.min(i + size, raw.length)); if (part.length) split(part); }
+      } else split(raw);
+    }
+  }
+
+  async function serialOpen(port) {
+    await port.open({ baudRate: +cfg.baud });
+    return { kind: "serial", port, reader: null };
+  }
+  async function serialLoop(h) {
+    const split = makeSplitter();
+    while (usb.active === h && h.port.readable) {
+      h.reader = h.port.readable.getReader();
+      try { for (;;) { const { value, done } = await h.reader.read(); if (done) break; if (value) split(value); } }
+      finally { try { h.reader.releaseLock(); } catch (e) {} }
+    }
+  }
+
+  async function usbStart(device) {
+    await usbStop();
+    usb.error = "";
+    try {
+      const h = useWebUsb ? await webUsbOpen(device) : await serialOpen(device);
+      usb.active = h;
+      usb.name = useWebUsb ? (device.productName || CHIP_NAME[h.chip]) + " (" + CHIP_NAME[h.chip] + ")" : "Serieller USB-Anschluss";
+      updateUsbUi();
+      (useWebUsb ? webUsbLoop(h) : serialLoop(h)).catch(err => {
+        if (usb.active === h) { usb.active = null; usb.error = "Verbindung zum Adapter verloren: " + err.message; updateUsbUi(); }
+      });
+    } catch (err) {
+      usb.active = null;
+      usb.error = "Adapter ließ sich nicht öffnen: " + err.message;
+      updateUsbUi();
+    }
+  }
+  async function usbStop() {
+    const h = usb.active; usb.active = null;
+    if (!h) return;
+    try {
+      if (h.kind === "webusb") await h.dev.close();
+      else { if (h.reader) await h.reader.cancel(); await h.port.close(); }
+    } catch (e) {}
+  }
+  async function usbPick() {
+    try {
+      const d = useWebUsb ? await navigator.usb.requestDevice({ filters: USB_FILTERS }) : await navigator.serial.requestPort();
+      await usbStart(d);
+    } catch (err) {
+      if (err && err.name !== "NotFoundError") { usb.error = err.message; updateUsbUi(); }
+    }
+  }
+  async function usbAuto() {
+    if (cfg.src !== "usb" || usb.active) return;
+    try {
+      const list = useWebUsb ? await navigator.usb.getDevices() : await navigator.serial.getPorts();
+      if (list.length) await usbStart(list[0]);
+    } catch (e) {}
+  }
+  if (hasUsb && useWebUsb) {
+    navigator.usb.addEventListener("connect", () => usbAuto());
+    navigator.usb.addEventListener("disconnect", e => { if (usb.active && usb.active.dev === e.device) { usb.active = null; usb.error = "Adapter wurde abgezogen."; updateUsbUi(); } });
+  } else if (hasSerial) {
+    navigator.serial.addEventListener("connect", () => usbAuto());
+    navigator.serial.addEventListener("disconnect", e => { if (usb.active && usb.active.port === e.target) { usb.active = null; usb.error = "Adapter wurde abgezogen."; updateUsbUi(); } });
+  }
+  function updateUsbUi() {
+    const on = cfg.src === "usb";
+    $("usbBtn").hidden = !on || !!usb.active || !usbPossible;
+    $("rowBaud").hidden = !on;
+    $("rowWs").hidden = cfg.src !== "ws";
+    let info = "";
+    if (on) {
+      if (!usbPossible) info = "Dieser Browser kann nicht auf USB zugreifen. Auf dem Android-Tablet die App in Chrome öffnen (über https).";
+      else if (usb.active) info = "Verbunden mit: " + usb.name + ", " + cfg.baud + " Baud.";
+      else info = usb.error || "Noch kein Adapter verbunden.";
+    }
+    $("usbInfo").textContent = info;
+    $("usbInfo").hidden = !info;
+  }
+
+  // ---------- Simulator ----------
+  let simTimer = null;
+  const sim = { t: 0, side: 1, sideTarget: 1, nextTack: 60 };
+  function simStep() {
+    sim.t += 0.5;
+    if (sim.t > sim.nextTack) { sim.sideTarget *= -1; sim.nextTack = sim.t + 70 + Math.random() * 60; }
+    sim.side += (sim.sideTarget - sim.side) * 0.08;
+    const tws = 13 + 3 * Math.sin(sim.t / 47) + 2.2 * Math.max(0, Math.sin(sim.t / 9.3)) * Math.sin(sim.t / 3.1) + (Math.random() - .5) * 1.4;
+    const twa = (48 + 5 * Math.sin(sim.t / 23) + (Math.random() - .5) * 6) * sim.side;
+    const bs = 5.6 + 0.3 * Math.sin(sim.t / 31);
+    const x = tws * Math.sin(twa * RAD), y = tws * Math.cos(twa * RAD) + bs;
+    const aws = Math.hypot(x, y);
+    const awa = ((Math.atan2(x, y) / RAD) + 360) % 360;
+    const body = "IIMWV," + awa.toFixed(1).padStart(5, "0") + ",R," + aws.toFixed(1) + ",N,A";
+    feedLine("$" + body + "*" + checksum(body));
+  }
+
+  // ---------- WebSocket zum Gateway ----------
+  let ws = null, wsRetry = null, wsBackoff = 1000, wsOpen = false;
+  function wsConnect() {
+    clearTimeout(wsRetry);
+    try { ws = new WebSocket(cfg.wsUrl); }
+    catch (e) { wsOpen = false; wsRetry = setTimeout(wsConnect, wsBackoff); return; }
+    ws.onopen = () => { wsOpen = true; wsBackoff = 1000; };
+    ws.onmessage = e => String(e.data).split(/\r?\n/).forEach(feedLine);
+    ws.onclose = () => {
+      wsOpen = false; ws = null;
+      if (cfg.src === "ws") { wsRetry = setTimeout(wsConnect, wsBackoff); wsBackoff = Math.min(wsBackoff * 2, 10000); }
+    };
+    ws.onerror = () => { try { ws && ws.close(); } catch (e) {} };
+  }
+  function wsStop() { clearTimeout(wsRetry); if (ws) { const w = ws; ws = null; w.onclose = null; try { w.close(); } catch (e) {} } wsOpen = false; }
+
+  function applySource() {
+    clearInterval(simTimer); simTimer = null; wsStop();
+    if (cfg.src !== "usb") usbStop();
+    st.vx = null; st.hist = []; st.lastValid = 0; shownAngle = null;
+    if (cfg.src === "sim") simTimer = setInterval(simStep, 500);
+    else if (cfg.src === "ws") { wsBackoff = 1000; wsConnect(); }
+    else usbAuto();
+    updateUsbUi();
+  }
+
+  // ---------- Zifferblatt ----------
+  const NS = "http://www.w3.org/2000/svg";
+  const dial = $("dial");
+  const el = (tag, attrs, parent) => { const n = document.createElementNS(NS, tag); for (const k in attrs) n.setAttribute(k, attrs[k]); (parent || dial).appendChild(n); return n; };
+  const pt = (a, r) => [r * Math.sin(a * RAD), -r * Math.cos(a * RAD)];
+  function arc(a0, a1, r) { const [x0, y0] = pt(a0, r), [x1, y1] = pt(a1, r); return `M${x0.toFixed(2)},${y0.toFixed(2)} A${r},${r} 0 ${((a1 - a0 + 360) % 360) > 180 ? 1 : 0} 1 ${x1.toFixed(2)},${y1.toFixed(2)}`; }
+
+  el("circle", { r: 192, fill: "var(--dial)", stroke: "var(--line)", "stroke-width": 2 });
+  // Am-Wind-Sektoren 20°–60° beiderseits
+  el("path", { d: arc(20, 60, 172), fill: "none", stroke: "var(--stbd)", "stroke-width": 12 });
+  el("path", { d: arc(300, 340, 172), fill: "none", stroke: "var(--port)", "stroke-width": 12 });
+  // Raumschots-Sektoren schmaler
+  el("path", { d: arc(120, 170, 172), fill: "none", stroke: "var(--stbd)", "stroke-width": 4, opacity: .55 });
+  el("path", { d: arc(190, 240, 172), fill: "none", stroke: "var(--port)", "stroke-width": 4, opacity: .55 });
+  for (let a = 0; a < 360; a += 5) {
+    const major = a % 30 === 0, mid = a % 10 === 0;
+    const [x0, y0] = pt(a, 182), [x1, y1] = pt(a, major ? 160 : mid ? 168 : 174);
+    el("line", { x1: x0, y1: y0, x2: x1, y2: y1, stroke: "var(--ink)", "stroke-width": major ? 3 : mid ? 1.6 : 1, opacity: major ? 1 : .6 });
+    if (major && a !== 0) {
+      const [tx, ty] = pt(a, 140);
+      const t = el("text", { x: tx, y: ty, "text-anchor": "middle", "dominant-baseline": "central", fill: a < 180 ? "var(--stbd)" : a > 180 ? "var(--port)" : "var(--ink)", "font-size": 17, "font-weight": 700, "font-family": "var(--font-num)" });
+      t.textContent = a <= 180 ? a : 360 - a;
+    }
+  }
+  // Boot (Draufsicht, Bug oben)
+  el("path", { d: "M0,-78 C22,-52 30,-8 24,52 L20,66 L-20,66 L-24,52 C-30,-8 -22,-52 0,-78 Z", fill: "none", stroke: "var(--muted)", "stroke-width": 2.5 });
+  el("line", { x1: 0, y1: -40, x2: 0, y2: 46, stroke: "var(--muted)", "stroke-width": 1.5, opacity: .6 });
+  // Mittelwert-Marke
+  const avgMark = el("g", { opacity: 0 });
+  el("path", { d: "M0,-186 L-8,-200 L8,-200 Z", fill: "var(--muted)" }, avgMark);
+  // Zeiger
+  const needle = el("g", { opacity: 0 });
+  el("path", { d: "M0,-176 L9,-112 L4,-20 L-4,-20 L-9,-112 Z", fill: "var(--needle)", stroke: "var(--dial)", "stroke-width": 1.5 }, needle);
+  el("path", { d: "M-4,-20 L4,-20 L3,40 L-3,40 Z", fill: "var(--needle)", opacity: .45 }, needle);
+  el("circle", { r: 9, fill: "var(--needle)", stroke: "var(--dial)", "stroke-width": 2 });
+
+  // ---------- Anzeige ----------
+  const BFT = [1, 4, 7, 11, 17, 22, 28, 34, 41, 48, 56, 64];
+  const BFT_NAME = ["Windstille", "Leiser Zug", "Leichte Brise", "Schwache Brise", "Mäßige Brise", "Frische Brise", "Starker Wind", "Steifer Wind", "Stürmischer Wind", "Sturm", "Schwerer Sturm", "Orkanartiger Sturm", "Orkan"];
+  const bftOf = kn => { let b = 0; while (b < 12 && kn >= BFT[b]) b++; return b; };
+  function fmtSpeed(kn) {
+    if (kn == null) return ["--.-", cfg.unit === "ms" ? "m/s" : cfg.unit === "bft" ? "Bft" : "kn"];
+    if (cfg.unit === "ms") return [(kn / 1.943844).toFixed(1), "m/s"];
+    if (cfg.unit === "bft") return [String(bftOf(kn)), "Bft"];
+    return [kn.toFixed(1), "kn"];
+  }
+
+  let shownAngle = null;
+  function frame() {
+    const now = Date.now();
+    const has = st.vx !== null;
+    const stale = !has || now - st.lastValid > 5000;
+
+    // Status
+    let s, txt;
+    if (cfg.src === "sim") { s = "sim"; txt = "Simulator"; }
+    else if (cfg.src === "usb" && !usb.active) { s = "off"; txt = "USB-Adapter nicht verbunden"; }
+    else if (cfg.src === "ws" && !wsOpen) { s = "off"; txt = "Gateway nicht erreichbar"; }
+    else if (stale) { s = "stale"; txt = "Keine Winddaten"; }
+    else { s = "ok"; txt = cfg.src === "usb" ? "Verbunden über USB" : "Verbunden über WLAN"; }
+    const pill = $("status");
+    if (pill.dataset.s !== s) pill.dataset.s = s;
+    if ($("statusText").textContent !== txt) $("statusText").textContent = txt;
+    dial.classList.toggle("stale", has && stale);
+
+    if (has) {
+      const target = ((Math.atan2(st.vx, st.vy) / RAD) + 360) % 360;
+      if (shownAngle === null) shownAngle = target;
+      let d = ((target - shownAngle + 540) % 360) - 180;
+      shownAngle = (shownAngle + d * 0.2 + 360) % 360;
+      needle.setAttribute("transform", `rotate(${shownAngle.toFixed(2)})`);
+      needle.setAttribute("opacity", 1);
+
+      const a = Math.round(target) % 360;
+      const off = a <= 180 ? a : 360 - a;
+      $("awa").textContent = String(off).padStart(3, " ") + "°";
+      const side = $("awaSide");
+      side.textContent = off === 0 || off === 180 ? (off === 0 ? "genau von vorn" : "genau von achtern") : a < 180 ? "Steuerbord" : "Backbord";
+      side.className = "sub " + (a > 0 && a < 180 ? "side-stbd" : a > 180 ? "side-port" : "");
+
+      const [v, u] = fmtSpeed(st.kn);
+      $("aws").textContent = v; $("awsUnit").textContent = u;
+      const b = bftOf(st.kn);
+      $("bft").textContent = b;
+      $("bftText").textContent = BFT_NAME[b] + " · Bft " + b;
+      $("awsLbl").textContent = st.ref === "T" ? "Wahrer Wind" : "Scheinbarer Wind";
+      $("awaLbl").textContent = st.ref === "T" ? "Wahrer Windwinkel" : "Windwinkel";
+
+      let gust = 0, sx = 0, sy = 0, sk = 0, n = 0;
+      for (const h of st.hist) {
+        if (h.kn > gust) gust = h.kn;
+        if (h.t >= now - 120000) { sx += h.x; sy += h.y; sk += h.kn; n++; }
+      }
+      const [gv, gu] = fmtSpeed(gust); $("gust").textContent = gv; $("gustUnit").textContent = gu;
+      if (n) {
+        const [av, au] = fmtSpeed(sk / n); $("avg").textContent = av; $("avgUnit").textContent = au;
+        const ma = ((Math.atan2(sx, sy) / RAD) + 360) % 360;
+        const mo = Math.round(ma <= 180 ? ma : 360 - ma);
+        $("avgDir").textContent = "Winkel " + mo + "° " + (ma < 180 ? "Stb" : "Bb");
+        avgMark.setAttribute("transform", `rotate(${ma.toFixed(1)})`);
+        avgMark.setAttribute("opacity", 1);
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // ---------- Verlauf ----------
+  const spark = $("spark");
+  function drawSpark() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = spark.clientWidth, h = spark.clientHeight;
+    if (!w) return;
+    if (spark.width !== Math.round(w * dpr)) { spark.width = Math.round(w * dpr); spark.height = Math.round(h * dpr); }
+    const c = spark.getContext("2d");
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+    const cs = getComputedStyle(document.body);
+    const ink = cs.getPropertyValue("--needle").trim(), mut = cs.getPropertyValue("--muted").trim(), line = cs.getPropertyValue("--line").trim();
+    const now = Date.now(), span = 300000;
+    const pts = st.hist.filter(p => p.t >= now - span);
+    c.font = "11px " + cs.getPropertyValue("--font-num");
+    if (pts.length < 2) { c.fillStyle = mut; c.fillText("Sammle Daten …", 4, h / 2); return; }
+    let lo = Infinity, hi = -Infinity;
+    for (const p of pts) { lo = Math.min(lo, p.kn); hi = Math.max(hi, p.kn); }
+    lo = Math.max(0, Math.floor(lo - 1)); hi = Math.ceil(hi + 1);
+    const L = 34, R = 4, T = 6, B = 6;
+    const X = t => L + (w - L - R) * (1 - (now - t) / span);
+    const Y = v => T + (h - T - B) * (1 - (v - lo) / (hi - lo));
+    c.strokeStyle = line; c.lineWidth = 1; c.fillStyle = mut;
+    for (const v of [lo, (lo + hi) / 2, hi]) {
+      c.beginPath(); c.moveTo(L, Y(v)); c.lineTo(w - R, Y(v)); c.stroke();
+      c.fillText((cfg.unit === "ms" ? v / 1.943844 : v).toFixed(cfg.unit === "ms" ? 1 : 0), 2, Y(v) + 4);
+    }
+    c.beginPath();
+    pts.forEach((p, i) => i ? c.lineTo(X(p.t), Y(p.kn)) : c.moveTo(X(p.t), Y(p.kn)));
+    c.lineTo(X(pts[pts.length - 1].t), h - B); c.lineTo(X(pts[0].t), h - B); c.closePath();
+    c.globalAlpha = .18; c.fillStyle = ink; c.fill(); c.globalAlpha = 1;
+    c.beginPath();
+    pts.forEach((p, i) => i ? c.lineTo(X(p.t), Y(p.kn)) : c.moveTo(X(p.t), Y(p.kn)));
+    c.strokeStyle = ink; c.lineWidth = 2; c.stroke();
+    const last = pts[pts.length - 1];
+    c.beginPath(); c.arc(X(last.t), Y(last.kn), 3.5, 0, Math.PI * 2); c.fillStyle = ink; c.fill();
+  }
+  setInterval(drawSpark, 1000);
+
+  // ---------- Log ----------
+  setInterval(() => { const t = st.log.join("\n"); if ($("log").textContent !== t) $("log").textContent = t; }, 500);
+
+  // ---------- Bedienung ----------
+  function applyUnit() { document.querySelectorAll("[data-unit]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.unit === cfg.unit))); drawSpark(); }
+  document.querySelectorAll("[data-unit]").forEach(b => b.addEventListener("click", () => { cfg.unit = b.dataset.unit; save(); applyUnit(); }));
+
+  function applyNight() { document.body.classList.toggle("night", !!cfg.night); $("nightBtn").setAttribute("aria-pressed", String(!!cfg.night)); drawSpark(); }
+  $("nightBtn").addEventListener("click", () => { cfg.night = !cfg.night; save(); applyNight(); });
+
+  if (!usbPossible) $("optUsb").textContent += " (hier nicht verfügbar)";
+  $("src").value = cfg.src;
+  $("src").addEventListener("change", e => { cfg.src = e.target.value; save(); applySource(); });
+  $("baud").value = String(cfg.baud);
+  $("baud").addEventListener("change", e => { cfg.baud = +e.target.value; save(); if (usb.active) { const h = usb.active; usbStart(h.kind === "webusb" ? h.dev : h.port); } else updateUsbUi(); });
+  $("usbBtn").addEventListener("click", usbPick);
+  $("wsUrl").value = cfg.wsUrl;
+  $("wsUrl").addEventListener("change", e => { cfg.wsUrl = e.target.value.trim() || defaults.wsUrl; e.target.value = cfg.wsUrl; save(); if (cfg.src === "ws") applySource(); });
+  $("damp").value = cfg.damp; $("dampVal").textContent = cfg.damp;
+  $("damp").addEventListener("input", e => { cfg.damp = +e.target.value; $("dampVal").textContent = cfg.damp; save(); });
+
+  // Bildschirm anlassen (wo erlaubt)
+  let lock = null;
+  async function keepAwake() { try { if ("wakeLock" in navigator && !lock) { lock = await navigator.wakeLock.request("screen"); lock.addEventListener("release", () => { lock = null; }); } } catch (e) {} }
+  document.addEventListener("click", keepAwake);
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") keepAwake(); });
+
+  window.lotteWind = { parseNmea, checksum, feedLine };
+  applyUnit(); applyNight(); applySource();
+  // Simulator sofort ein paar Werte vorlegen, damit die Anzeige gleich lebt
+  if (cfg.src === "sim") for (let i = 0; i < 8; i++) simStep();
+  requestAnimationFrame(frame);
+})();
+</script>

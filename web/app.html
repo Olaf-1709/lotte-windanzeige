@@ -176,8 +176,8 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
           <input type="text" id="wsUrl" autocomplete="off" spellcheck="false">
         </div>
         <div class="row">
-          <label class="lbl" for="damp">Dämpfung: <span id="dampVal">3</span></label>
-          <input type="range" id="damp" min="0" max="10" step="1" value="3">
+          <label class="lbl" for="damp">Dämpfung: <span id="dampVal">1</span></label>
+          <input type="range" id="damp" min="0" max="10" step="1" value="1">
         </div>
         <div class="row">
           <span class="lbl">Letzte NMEA-Sätze</span>
@@ -200,7 +200,7 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
   const defaults = {
     src: usbPossible ? "usb" : "sim",
     wsUrl: "ws://192.168.4.1:81/",
-    unit: "kn", damp: 3, night: false, baud: 4800
+    unit: "kn", damp: 1, night: false, baud: 4800
   };
   const cfg = Object.assign({}, defaults);
   try { Object.assign(cfg, JSON.parse(localStorage.getItem("lotteWind") || "{}")); } catch (e) {}

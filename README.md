@@ -63,3 +63,12 @@ Tipp: Man kann alles vorher am Laptop testen. Chrome oder Edge unter Windows/Mac
 - `web/app.html`: die App (eine Datei, Quelltext)
 - `build.js`: baut daraus mit `node build.js` die installierbare Offline-App in `docs/`
 - `docs/`: fertige App zum Hochladen auf GitHub Pages oder einen anderen https-Webspace
+
+## Tiefe und wahrer Wind
+
+- **Mehrere Adapter:** In der App „Weiteren Adapter verbinden“ tippen. Über einen USB-OTG-Hub können z.B. Wind (NASA-Box) und Tiefe gleichzeitig gelesen werden.
+- **Tiefe:** Die App liest `DPT` und `DBT`. Die Tiefenanzeige erscheint, sobald Tiefendaten ankommen. Flachwasser-Alarm in den Einstellungen (Standard 2,0 m, 0 = aus), mit Piepton.
+- **Wahrer Wind:** In den Einstellungen „Fahrt für den wahren Wind“ wählen:
+  - *GPS des Tablets*: nutzt die Standortfreigabe des Browsers.
+  - *NMEA über USB*: liest `RMC`/`VTG`, z.B. vom Raymarine Element über SeaTalkNG und ein NMEA-2000-USB-Gateway (Yacht Devices YDNU-02).
+  - Berechnet wird der Wind über Grund (mit SOG). Im Zifferblatt zeigt das Symbol „W“ die Richtung des wahren Windes.

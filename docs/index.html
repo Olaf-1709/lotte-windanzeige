@@ -73,6 +73,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, summary:focus-v
 .pill[data-s="stale"] i, .pill[data-s="off"] i { background: var(--bad); }
 .btn { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 8px 14px; font-weight: 600; cursor: pointer; min-height: 44px; }
 .btn[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.btn.quiet { font-weight: 500; color: var(--muted); }
+.depth { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
+.depth .val { font-size: clamp(2.6rem, 8vw, 4.2rem); }
+.depth.alarm { background: var(--bad); border-color: var(--bad); }
+.depth.alarm, .depth.alarm .lbl, .depth.alarm .u, .depth.alarm .sub { color: var(--dial); }
+@media (prefers-reduced-motion: no-preference) { .depth.alarm { animation: blink 1s steps(2, start) infinite; } }
+@keyframes blink { 50% { opacity: .55; } }
 
 .app { display: grid; gap: 16px; margin-top: 12px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 760px) and (orientation: landscape), (min-width: 1000px) {
@@ -148,6 +155,24 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
         <div class="val" id="bft">-</div>
         <div class="sub">Bft</div>
       </div>
+      <div class="cell tw" hidden>
+        <div class="lbl">Wahrer Wind</div>
+        <div class="val"><span id="tws">--.-</span><span class="u" id="twsUnit">kn</span></div>
+        <div class="sub" id="twa">&nbsp;</div>
+      </div>
+      <div class="cell tw" hidden>
+        <div class="lbl">Fahrt über Grund</div>
+        <div class="val"><span id="sog">--.-</span><span class="u">kn</span></div>
+        <div class="sub" id="sogSrcTxt">&nbsp;</div>
+      </div>
+    </div>
+
+    <div class="depth" id="depthCard" hidden>
+      <div>
+        <div class="lbl">Wassertiefe</div>
+        <div class="val"><span id="depth">--.-</span><span class="u">m</span></div>
+      </div>
+      <div class="sub" id="depthNote">&nbsp;</div>
     </div>
 
     <div class="units" role="group" aria-label="Einheit">
@@ -179,6 +204,18 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
             <option value="38400">38400 (NMEA 0183 HS)</option>
           </select>
         </div>
+        <div class="row">
+          <label class="lbl" for="sogSrc">Fahrt für den wahren Wind</label>
+          <select id="sogSrc">
+            <option value="off">Aus</option>
+            <option value="gps">GPS des Tablets</option>
+            <option value="nmea">NMEA über USB (RMC/VTG, z.B. vom Plotter)</option>
+          </select>
+        </div>
+        <div class="row">
+          <label class="lbl" for="shallow">Flachwasser-Alarm unter (m), 0 = aus</label>
+          <input type="text" id="shallow" inputmode="decimal" autocomplete="off">
+        </div>
         <div class="row" id="rowWs">
           <label class="lbl" for="wsUrl">Gateway-Adresse</label>
           <input type="text" id="wsUrl" autocomplete="off" spellcheck="false">
@@ -208,7 +245,7 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
   const defaults = {
     src: usbPossible ? "usb" : "sim",
     wsUrl: "ws://192.168.4.1:81/",
-    unit: "kn", damp: 1, night: false, baud: 4800
+    unit: "kn", damp: 1, night: false, baud: 4800, shallow: 2.0, sogSrc: "off"
   };
   const cfg = Object.assign({}, defaults);
   try { Object.assign(cfg, JSON.parse(localStorage.getItem("lotteWind") || "{}")); } catch (e) {}
@@ -237,20 +274,46 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
       if (f[4] && f[4] !== "A") return null;
       const a = parseFloat(f[0]), s = parseFloat(f[2]), k = toKn[f[3]];
       if (!isFinite(a) || !isFinite(s) || !k) return null;
-      return { awa: ((a % 360) + 360) % 360, kn: s * k, ref: f[1] === "T" ? "T" : "R" };
+      return { type: "wind", awa: ((a % 360) + 360) % 360, kn: s * k, ref: f[1] === "T" ? "T" : "R" };
     }
     if (m[2] === "VWR") {
       // VWR,<Winkel 0..180>,<L|R>,<kn>,N,<m/s>,M,<km/h>,K
       const a = parseFloat(f[0]); let kn = parseFloat(f[2]);
       if (!isFinite(kn)) kn = parseFloat(f[4]) * toKn.M;
       if (!isFinite(a) || !isFinite(kn)) return null;
-      return { awa: f[1] === "L" ? 360 - a : a, kn, ref: "R" };
+      return { type: "wind", awa: f[1] === "L" ? 360 - a : a, kn, ref: "R" };
+    }
+    if (m[2] === "RMC") {
+      // RMC,<Zeit>,<A|V>,<Lat>,<N|S>,<Lon>,<E|W>,<SOG kn>,<COG>,...
+      if (f[1] !== "A") return null;
+      const sog = parseFloat(f[6]);
+      return isFinite(sog) ? { type: "sog", kn: sog } : null;
+    }
+    if (m[2] === "VTG") {
+      // VTG,<COG T>,T,<COG M>,M,<SOG kn>,N,<SOG km/h>,K
+      let sog = parseFloat(f[4]);
+      if (!isFinite(sog)) sog = parseFloat(f[6]) / 1.852;
+      return isFinite(sog) ? { type: "sog", kn: sog } : null;
+    }
+    if (m[2] === "DPT") {
+      // DPT,<Tiefe unter Geber m>,<Offset m: + Wasserlinie, - Kiel>
+      const d = parseFloat(f[0]), off = parseFloat(f[1]);
+      if (!isFinite(d)) return null;
+      return { type: "depth", m: d + (isFinite(off) && off > 0 ? off : 0) };
+    }
+    if (m[2] === "DBT") {
+      // DBT,<Fuß>,f,<Meter>,M,<Faden>,F
+      let d = parseFloat(f[2]);
+      if (!isFinite(d)) d = parseFloat(f[0]) * 0.3048;
+      if (!isFinite(d)) d = parseFloat(f[4]) * 1.8288;
+      if (!isFinite(d)) return null;
+      return { type: "depth", m: d };
     }
     return null;
   }
 
   // ---------- Zustand ----------
-  const st = { vx: null, vy: null, kn: null, ref: "R", lastValid: 0, hist: [], log: [] };
+  const st = { vx: null, vy: null, kn: null, ref: "R", lastValid: 0, hist: [], log: [], depth: null, depthT: 0, sog: null, sogT: 0, sogFrom: "" };
   const RAD = Math.PI / 180;
 
   function onWind(w) {
@@ -268,11 +331,34 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
     while (st.hist.length && st.hist[0].t < now - 600000) st.hist.shift();
   }
 
+  function onSog(kn, from) {
+    const alpha = 1 / (1 + cfg.damp);
+    st.sog = st.sog === null || Date.now() - st.sogT > 10000 ? kn : st.sog + alpha * (kn - st.sog);
+    st.sogT = Date.now(); st.sogFrom = from;
+  }
+  let gpsWatch = null;
+  function applySog() {
+    if (gpsWatch !== null) { try { navigator.geolocation.clearWatch(gpsWatch); } catch (e) {} gpsWatch = null; }
+    st.sog = null; st.gpsErr = "";
+    if (cfg.sogSrc === "gps") {
+      if (!("geolocation" in navigator)) { st.gpsErr = "Dieser Browser liefert kein GPS."; return; }
+      try {
+        gpsWatch = navigator.geolocation.watchPosition(
+          p => { if (p.coords.speed !== null && isFinite(p.coords.speed)) { st.gpsErr = ""; onSog(Math.max(0, p.coords.speed) * 1.943844, "GPS"); } else st.gpsErr = "GPS liefert noch keine Fahrt"; },
+          e => { st.gpsErr = e.code === 1 ? "Standortfreigabe verweigert" : "Kein GPS-Empfang"; },
+          { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+      } catch (e) { st.gpsErr = "GPS nicht verfügbar"; }
+    }
+  }
+
   function feedLine(line) {
     if (!line.trim()) return;
     st.log.push(line.trim()); if (st.log.length > 6) st.log.shift();
     const w = parseNmea(line);
-    if (w) onWind(w);
+    if (!w) return;
+    if (w.type === "wind") onWind(w);
+    else if (w.type === "depth") { st.depth = w.m; st.depthT = Date.now(); }
+    else if (w.type === "sog" && cfg.sogSrc === "nmea") onSog(w.kn, "NMEA");
   }
 
   // Zerlegt einen Byte-Strom in NMEA-Zeilen
@@ -291,7 +377,7 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
   // Windows/Mac/Linux (Chrome, Edge): Web Serial, dort hat das System den Treiber.
   const USB_FILTERS = [{ vendorId: 0x0403 }, { vendorId: 0x10c4 }, { vendorId: 0x1a86 }, { vendorId: 0x067b }, { classCode: 2 }];
   const CHIP_NAME = { ftdi: "FTDI", cp210x: "Silabs CP210x", ch34x: "WCH CH340/CH341", pl2303: "Prolific PL2303", cdc: "USB CDC" };
-  const usb = { active: null, name: "", error: "" };
+  const usb = { list: [], error: "" };
   const useWebUsb = hasUsb && (isAndroid || !hasSerial);
   const chipOf = d => ({ 0x0403: "ftdi", 0x10c4: "cp210x", 0x1a86: "ch34x", 0x067b: "pl2303" })[d.vendorId] || "cdc";
 
@@ -351,7 +437,7 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
 
   async function webUsbLoop(h) {
     const split = makeSplitter(), size = h.epIn.packetSize || 64;
-    while (usb.active === h) {
+    while (usbAlive(h)) {
       const r = await h.dev.transferIn(h.epIn.endpointNumber, size * 8);
       if (r.status === "stall") { await h.dev.clearHalt("in", h.epIn.endpointNumber); continue; }
       if (!r.data || !r.data.byteLength) continue;
@@ -369,38 +455,41 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
   }
   async function serialLoop(h) {
     const split = makeSplitter();
-    while (usb.active === h && h.port.readable) {
+    while (usbAlive(h) && h.port.readable) {
       h.reader = h.port.readable.getReader();
       try { for (;;) { const { value, done } = await h.reader.read(); if (done) break; if (value) split(value); } }
       finally { try { h.reader.releaseLock(); } catch (e) {} }
     }
   }
 
+  // Mehrere Adapter gleichzeitig möglich (z.B. Wind über NMEA 0183, Tiefe über NMEA-2000-Gateway)
+  const devOf = h => h.kind === "webusb" ? h.dev : h.port;
   async function usbStart(device) {
-    await usbStop();
+    if (usb.list.some(h => devOf(h) === device)) return;
     usb.error = "";
     try {
       const h = useWebUsb ? await webUsbOpen(device) : await serialOpen(device);
-      usb.active = h;
-      usb.name = useWebUsb ? (device.productName || CHIP_NAME[h.chip]) + " (" + CHIP_NAME[h.chip] + ")" : "Serieller USB-Anschluss";
+      h.name = useWebUsb ? (device.productName || CHIP_NAME[h.chip]) + " (" + CHIP_NAME[h.chip] + ")" : "Serieller USB-Anschluss";
+      usb.list.push(h);
       updateUsbUi();
       (useWebUsb ? webUsbLoop(h) : serialLoop(h)).catch(err => {
-        if (usb.active === h) { usb.active = null; usb.error = "Verbindung zum Adapter verloren: " + err.message; updateUsbUi(); }
+        if (usbAlive(h)) { usbDrop(h); usb.error = "Verbindung zu " + h.name + " verloren: " + err.message; updateUsbUi(); }
       });
     } catch (err) {
-      usb.active = null;
       usb.error = "Adapter ließ sich nicht öffnen: " + err.message;
       updateUsbUi();
     }
   }
-  async function usbStop() {
-    const h = usb.active; usb.active = null;
-    if (!h) return;
+  const usbAlive = h => usb.list.includes(h);
+  const usbDrop = h => { usb.list = usb.list.filter(x => x !== h); };
+  async function usbClose(h) {
+    usbDrop(h);
     try {
       if (h.kind === "webusb") await h.dev.close();
       else { if (h.reader) await h.reader.cancel(); await h.port.close(); }
     } catch (e) {}
   }
+  async function usbStop() { for (const h of usb.list.slice()) await usbClose(h); }
   async function usbPick() {
     try {
       const d = useWebUsb ? await navigator.usb.requestDevice({ filters: USB_FILTERS }) : await navigator.serial.requestPort();
@@ -410,28 +499,34 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
     }
   }
   async function usbAuto() {
-    if (cfg.src !== "usb" || usb.active) return;
+    if (cfg.src !== "usb") return;
     try {
       const list = useWebUsb ? await navigator.usb.getDevices() : await navigator.serial.getPorts();
-      if (list.length) await usbStart(list[0]);
+      for (const d of list) await usbStart(d);
     } catch (e) {}
+  }
+  function onUnplug(dev) {
+    const h = usb.list.find(x => devOf(x) === dev);
+    if (h) { usbDrop(h); usb.error = h.name + " wurde abgezogen."; updateUsbUi(); }
   }
   if (hasUsb && useWebUsb) {
     navigator.usb.addEventListener("connect", () => usbAuto());
-    navigator.usb.addEventListener("disconnect", e => { if (usb.active && usb.active.dev === e.device) { usb.active = null; usb.error = "Adapter wurde abgezogen."; updateUsbUi(); } });
+    navigator.usb.addEventListener("disconnect", e => onUnplug(e.device));
   } else if (hasSerial) {
     navigator.serial.addEventListener("connect", () => usbAuto());
-    navigator.serial.addEventListener("disconnect", e => { if (usb.active && usb.active.port === e.target) { usb.active = null; usb.error = "Adapter wurde abgezogen."; updateUsbUi(); } });
+    navigator.serial.addEventListener("disconnect", e => onUnplug(e.target));
   }
   function updateUsbUi() {
     const on = cfg.src === "usb";
-    $("usbBtn").hidden = !on || !!usb.active || !usbPossible;
+    $("usbBtn").hidden = !on || !usbPossible;
+    $("usbBtn").textContent = usb.list.length ? "Weiteren Adapter verbinden" : "USB-Adapter verbinden";
+    $("usbBtn").classList.toggle("quiet", usb.list.length > 0);
     $("rowBaud").hidden = !on;
     $("rowWs").hidden = cfg.src !== "ws";
     let info = "";
     if (on) {
       if (!usbPossible) info = "Dieser Browser kann nicht auf USB zugreifen. Auf dem Android-Tablet die App in Chrome öffnen (über https).";
-      else if (usb.active) info = "Verbunden mit: " + usb.name + ", " + cfg.baud + " Baud.";
+      else if (usb.list.length) info = "Verbunden mit: " + usb.list.map(h => h.name).join(" und ") + ", " + cfg.baud + " Baud." + (usb.error ? " " + usb.error : "");
       else info = usb.error || "Noch kein Adapter verbunden.";
     }
     $("usbInfo").textContent = info;
@@ -453,6 +548,13 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
     const awa = ((Math.atan2(x, y) / RAD) + 360) % 360;
     const body = "IIMWV," + awa.toFixed(1).padStart(5, "0") + ",R," + aws.toFixed(1) + ",N,A";
     feedLine("$" + body + "*" + checksum(body));
+    if (cfg.sogSrc === "nmea") { const rb = "GPRMC,120000,A,5430.000,N,01010.000,E," + bs.toFixed(1) + ",045.0,161126,,"; feedLine("$" + rb + "*" + checksum(rb)); }
+    else if (cfg.sogSrc === "gps") onSog(bs, "Simulator");
+    if (Math.round(sim.t * 2) % 2 === 0) {
+      const dep = 5.2 + 2.5 * Math.sin(sim.t / 37) + 0.15 * (Math.random() - .5);
+      const db = "SDDPT," + dep.toFixed(1) + ",0.0";
+      feedLine("$" + db + "*" + checksum(db));
+    }
   }
 
   // ---------- WebSocket zum Gateway ----------
@@ -512,6 +614,10 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
   const avgMark = el("g", { opacity: 0 });
   el("path", { d: "M0,-186 L-8,-200 L8,-200 Z", fill: "var(--muted)" }, avgMark);
   // Zeiger
+  const twMark = el("g", { opacity: 0 });
+  el("circle", { cy: -150, r: 13, fill: "var(--dial)", stroke: "var(--ink)", "stroke-width": 2.5 }, twMark);
+  const twT = el("text", { y: -150, "text-anchor": "middle", "dominant-baseline": "central", fill: "var(--ink)", "font-size": 15, "font-weight": 700, "font-family": "var(--font-body)" }, twMark);
+  twT.textContent = "W";
   const needle = el("g", { opacity: 0 });
   el("path", { d: "M0,-176 L9,-112 L4,-20 L-4,-20 L-9,-112 Z", fill: "var(--needle)", stroke: "var(--dial)", "stroke-width": 1.5 }, needle);
   el("path", { d: "M-4,-20 L4,-20 L3,40 L-3,40 Z", fill: "var(--needle)", opacity: .45 }, needle);
@@ -529,6 +635,47 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
   }
 
   let shownAngle = null;
+  let beepAt = 0, audio = null;
+  function beep() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = 880; g.gain.value = 0.2; o.connect(g); g.connect(audio.destination);
+      o.start(); o.stop(audio.currentTime + 0.25);
+    } catch (e) {}
+  }
+  function renderTrue(now, awa) {
+    const on = cfg.sogSrc !== "off";
+    document.querySelectorAll(".tw").forEach(c => { c.hidden = !on; });
+    const fresh = st.sog !== null && now - st.sogT < 10000;
+    $("sogSrcTxt").textContent = !on ? "" : fresh ? "Quelle: " + st.sogFrom : (st.gpsErr || "Warte auf Fahrtdaten");
+    if (!on || !fresh || st.kn === null) {
+      $("tws").textContent = "--.-"; $("sog").textContent = fresh ? st.sog.toFixed(1) : "--.-";
+      $("twa").textContent = on ? "braucht Fahrt über Grund" : ""; twMark.setAttribute("opacity", 0); return;
+    }
+    // Scheinbarer Wind minus Fahrtwind = wahrer Wind (über Grund)
+    const x = st.kn * Math.sin(awa * RAD), y = st.kn * Math.cos(awa * RAD) - st.sog;
+    const tws = Math.hypot(x, y), twa = ((Math.atan2(x, y) / RAD) + 360) % 360;
+    const [v, u] = fmtSpeed(tws); $("tws").textContent = v; $("twsUnit").textContent = u;
+    const o = Math.round(twa <= 180 ? twa : 360 - twa);
+    $("twa").textContent = "Winkel " + o + "° " + (twa < 180 ? "Stb" : "Bb");
+    $("sog").textContent = st.sog.toFixed(1);
+    twMark.setAttribute("transform", `rotate(${twa.toFixed(1)})`);
+    twT.setAttribute("transform", `rotate(${(-twa).toFixed(1)} 0 -150)`);
+    twMark.setAttribute("opacity", 1);
+  }
+  function renderDepth(now) {
+    const card = $("depthCard");
+    if (st.depth === null) { card.hidden = true; return; }
+    card.hidden = false;
+    const fresh = now - st.depthT < 10000;
+    $("depth").textContent = fresh ? st.depth.toFixed(1) : "--.-";
+    const lim = +cfg.shallow || 0;
+    const alarm = fresh && lim > 0 && st.depth < lim;
+    card.classList.toggle("alarm", alarm);
+    $("depthNote").textContent = !fresh ? "Keine Tiefendaten" : alarm ? "Flachwasser! Unter " + lim.toFixed(1) + " m" : lim > 0 ? "Alarm unter " + lim.toFixed(1) + " m" : "Alarm aus";
+    if (alarm && now - beepAt > 2000) { beepAt = now; beep(); }
+  }
   function frame() {
     const now = Date.now();
     const has = st.vx !== null;
@@ -537,7 +684,7 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
     // Status
     let s, txt;
     if (cfg.src === "sim") { s = "sim"; txt = "Simulator"; }
-    else if (cfg.src === "usb" && !usb.active) { s = "off"; txt = "USB-Adapter nicht verbunden"; }
+    else if (cfg.src === "usb" && !usb.list.length) { s = "off"; txt = "USB-Adapter nicht verbunden"; }
     else if (cfg.src === "ws" && !wsOpen) { s = "off"; txt = "Gateway nicht erreichbar"; }
     else if (stale) { s = "stale"; txt = "Keine Winddaten"; }
     else { s = "ok"; txt = cfg.src === "usb" ? "Verbunden über USB" : "Verbunden über WLAN"; }
@@ -545,6 +692,7 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
     if (pill.dataset.s !== s) pill.dataset.s = s;
     if ($("statusText").textContent !== txt) $("statusText").textContent = txt;
     dial.classList.toggle("stale", has && stale);
+    renderDepth(now);
 
     if (has) {
       const target = ((Math.atan2(st.vx, st.vy) / RAD) + 360) % 360;
@@ -583,6 +731,7 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
         avgMark.setAttribute("transform", `rotate(${ma.toFixed(1)})`);
         avgMark.setAttribute("opacity", 1);
       }
+      renderTrue(now, target);
     }
     requestAnimationFrame(frame);
   }
@@ -640,8 +789,13 @@ pre.log { margin: 0; font-family: var(--font-num); font-size: .78rem; color: var
   $("src").value = cfg.src;
   $("src").addEventListener("change", e => { cfg.src = e.target.value; save(); applySource(); });
   $("baud").value = String(cfg.baud);
-  $("baud").addEventListener("change", e => { cfg.baud = +e.target.value; save(); if (usb.active) { const h = usb.active; usbStart(h.kind === "webusb" ? h.dev : h.port); } else updateUsbUi(); });
+  $("baud").addEventListener("change", e => { cfg.baud = +e.target.value; save(); if (usb.list.length) { const devs = usb.list.map(devOf); usbStop().then(() => devs.forEach(d => usbStart(d))); } else updateUsbUi(); });
   $("usbBtn").addEventListener("click", usbPick);
+  $("sogSrc").value = cfg.sogSrc;
+  $("sogSrc").addEventListener("change", e => { cfg.sogSrc = e.target.value; save(); applySog(); });
+  applySog();
+  $("shallow").value = String(cfg.shallow).replace(".", ",");
+  $("shallow").addEventListener("change", e => { const v = parseFloat(e.target.value.replace(",", ".")); cfg.shallow = isFinite(v) && v >= 0 ? v : 0; e.target.value = String(cfg.shallow).replace(".", ","); save(); });
   $("wsUrl").value = cfg.wsUrl;
   $("wsUrl").addEventListener("change", e => { cfg.wsUrl = e.target.value.trim() || defaults.wsUrl; e.target.value = cfg.wsUrl; save(); if (cfg.src === "ws") applySource(); });
   $("damp").value = cfg.damp; $("dampVal").textContent = cfg.damp;
